@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>研究日記</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.3.0/dist/tabler-icons.min.css">
+<style>
+:root{
+  --bg:#f7f6f3;--surface:#ffffff;--surface2:#f0ede8;
+  --border:#e2ddd7;--border2:#ccc8c0;
+  --text:#1a1916;--text2:#5a5750;--text3:#9a9590;
+  --green:#3a7010;--green-bg:#edf5e1;--green-bd:#c5dfa0;
+  --blue:#1a4fa0;--blue-bg:#e8f0fc;--blue-bd:#a8c0f0;
+  --amber:#8a4a05;--amber-bg:#fdf0dd;--amber-bd:#f0c878;
+  --red:#b81c1c;--red-bg:#fce8e8;
+  --radius:10px;--radius-sm:6px;
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#111014;--surface:#1c1b20;--surface2:#252428;
+  --border:#2e2d32;--border2:#3e3d42;
+  --text:#e8e6e0;--text2:#9a9890;--text3:#5a5850;
+  --green:#7dc04a;--green-bg:#1a2a0e;--green-bd:#3a5820;
+  --blue:#6090e8;--blue-bg:#0e1830;--blue-bd:#284880;
+  --amber:#e8a040;--amber-bg:#2a1a08;--amber-bd:#704808;
+  --red:#e86060;--red-bg:#2a0e0e;
+}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Noto Sans JP',sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6;min-height:100vh}
+input,textarea,select{font-family:inherit;font-size:14px;color:var(--text);background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:8px 12px;outline:none;transition:border-color .15s,box-shadow .15s;width:100%}
+input:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(26,79,160,.12)}
+input[type=password]{letter-spacing:.1em}
+button{font-family:inherit;font-size:13px;color:var(--text2);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 14px;cursor:pointer;transition:background .12s,border-color .12s,color .12s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+button:hover{background:var(--surface2);border-color:var(--border2);color:var(--text)}
+button:active{opacity:.8}
+button.primary{background:var(--text);color:var(--bg);border-color:var(--text)}
+button.primary:hover{opacity:.85}
+button.active{background:var(--surface2);border-color:var(--border2);color:var(--text)}
+textarea{resize:vertical;line-height:1.75}
+textarea:disabled{opacity:.45;cursor:not-allowed}
+.badge{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:500}
+.badge-green{background:var(--green-bg);color:var(--green);border:1px solid var(--green-bd)}
+.badge-blue{background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-bd)}
+.badge-amber{background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-bd)}
+.spin{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#root{min-height:100vh}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="module">
+window.webllmReady=import('https://esm.run/@mlc-ai/web-llm');
+</script>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback}=React;
+
+/* ── Crypto ── */
+const enc=new TextEncoder(),dec=new TextDecoder();
+const b64e=buf=>btoa(String.fromCharCode(...new Uint8Array(buf)));
+const b64d=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+
+async function deriveKey(password,salt){
+  const raw=await crypto.subtle.importKey('raw',enc.encode(password),{name:'PBKDF2'},false,['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:200000,hash:'SHA-256'},raw,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+}
+async function aesEncrypt(text,key){
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,enc.encode(text));
+  const out=new Uint8Array(12+ct.byteLength);
+  out.set(iv);out.set(new Uint8Array(ct),12);
+  return b64e(out.buffer);
+}
+async function aesDecrypt(b64,key){
+  const buf=b64d(b64);
+  const iv=buf.slice(0,12),ct=buf.slice(12);
+  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv},key,ct);
+  return dec.decode(pt);
+}
+
+/* ── LocalStorage ── */
+const SENTINEL='DIARY_APP_v1_OK';
+function lsGet(k){try{return localStorage.getItem(k)}catch{return null}}
+function lsSet(k,v){try{localStorage.setItem(k,v)}catch{}}
+
+async function setupPassword(password){
+  const salt=crypto.getRandomValues(new Uint8Array(16));
+  lsSet('d:salt',b64e(salt.buffer));
+  const key=await deriveKey(password,salt);
+  lsSet('d:sentinel',await aesEncrypt(SENTINEL,key));
+  return key;
+}
+async function verifyPassword(password){
+  const saltB64=lsGet('d:salt');
+  if(!saltB64)return null;
+  const salt=b64d(saltB64);
+  const key=await deriveKey(password,salt);
+  try{
+    const s=lsGet('d:sentinel');
+    if(!s)return null;
+    const val=await aesDecrypt(s,key);
+    return val===SENTINEL?key:null;
+  }catch{return null;}
+}
+async function encSave(k,obj,key){
+  const s=await aesEncrypt(JSON.stringify(obj),key);
+  lsSet(k,s);
+}
+async function encLoad(k,key){
+  const s=lsGet(k);
+  if(!s)return null;
+  try{return JSON.parse(await aesDecrypt(s,key))}catch{return null;}
+}
+
+/* ── Helpers ── */
+const DAYS=['日','月','火','水','木','金','土'];
+const CATS=[
+  {id:'research',label:'研究',icon:'ti-microscope',dotColor:'var(--green)',accent:'var(--green)',badgeClass:'badge-green'},
+  {id:'private',label:'プライベート',icon:'ti-leaf',dotColor:'var(--blue)',accent:'var(--blue)',badgeClass:'badge-blue'},
+  {id:'job',label:'就活',icon:'ti-briefcase',dotColor:'var(--amber)',accent:'var(--amber)',badgeClass:'badge-amber'},
+];
+function fmt(d){return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+function parseD(s){const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)}
+function todayStr(){return fmt(new Date())}
+
+function getMDRange(meetDay){
+  const now=new Date();
+  const back=(now.getDay()-meetDay+7)%7;
+  const start=new Date(now);
+  const end=new Date(now);
+  if(back===0){
+    start.setDate(now.getDate()-7);
+    end.setDate(now.getDate()-1);
+  }else{
+    start.setDate(now.getDate()-back);
+  }
+  start.setHours(0,0,0,0);
+  end.setHours(23,59,59,999);
+  return{start,end};
+}
+function renderMD(text){
+  return text.split('\n').map((line,i)=>{
+    if(/^##\s/.test(line))return<h3 key={i} style={{fontSize:'14px',fontWeight:'500',color:'var(--text)',margin:'16px 0 6px'}}>{line.slice(3)}</h3>;
+    if(/^#\s/.test(line))return<h2 key={i} style={{fontSize:'15px',fontWeight:'500',margin:'20px 0 8px'}}>{line.slice(2)}</h2>;
+    if(/^[-•・]\s/.test(line))return<li key={i} style={{marginLeft:'18px',marginBottom:'3px',color:'var(--text)'}}>{line.replace(/^[-•・]\s/,'')}</li>;
+    if(line==='')return<div key={i} style={{height:'6px'}}/>;
+    return<p key={i} style={{marginBottom:'4px',color:'var(--text)'}}>{line}</p>;
+  });
+}
+
+/* ══ App ══ */
+function App(){
+  const[phase,setPhase]=useState('loading');
+  const[cryptoKey,setCryptoKey]=useState(null);
+  const[pw1,setPw1]=useState('');const[pw2,setPw2]=useState('');const[pwErr,setPwErr]=useState('');
+  const[view,setView]=useState('day');
+  const[sel,setSel]=useState(todayStr());
+  const[calMon,setCalMon]=useState(new Date());
+  const[cat,setCat]=useState('research');
+  const[entries,setEntries]=useState({});
+  const[entryDates,setEntryDates]=useState(new Set());
+  const[meetDay,setMeetDay]=useState(1);
+  const[showSettings,setShowSettings]=useState(false);
+  const[summary,setSummary]=useState('');
+  const[sumLoading,setSumLoading]=useState(false);
+  const[modelStatus,setModelStatus]=useState('');
+  const[saved,setSaved]=useState(false);
+  const saveRef=useRef();
+  const webllmEngineRef=useRef(null);
+
+  useEffect(()=>{
+    const hasPw=!!lsGet('d:sentinel');
+    setPhase(hasPw?'login':'setup');
+  },[]);
+
+  /* load metadata after login */
+  const loadMeta=useCallback(async(key)=>{
+    const meta=await encLoad('d:meta',key);
+    if(meta){
+      if(meta.meetDay!=null)setMeetDay(meta.meetDay);
+    }
+    /* scan known entry dates */
+    const known=new Set();
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k&&k.startsWith('d:e:'))known.add(k.slice(4));
+    }
+    setEntryDates(known);
+  },[]);
+
+  const saveMeta=useCallback(async(key,data)=>{
+    await encSave('d:meta',data,key);
+  },[]);
+
+  /* auth */
+  const doSetup=async()=>{
+    if(pw1.length<4){setPwErr('4文字以上で設定してください');return;}
+    if(pw1!==pw2){setPwErr('パスワードが一致しません');return;}
+    const key=await setupPassword(pw1);
+    await encSave('d:meta',{meetDay:1},key);
+    setCryptoKey(key);setPhase('app');setPw1('');setPw2('');setPwErr('');
+  };
+  const doLogin=async()=>{
+    const key=await verifyPassword(pw1);
+    if(key){setCryptoKey(key);await loadMeta(key);setPhase('app');setPw1('');setPwErr('');}
+    else setPwErr('パスワードが違います');
+  };
+  const doChangePw=async()=>{
+    if(pw1.length<4){setPwErr('4文字以上で設定してください');return;}
+    if(pw1!==pw2){setPwErr('パスワードが一致しません');return;}
+    const newKey=await setupPassword(pw1);
+    /* re-encrypt all entries */
+    const keys=[...entryDates];
+    for(const ds of keys){
+      const e=await encLoad(`d:e:${ds}`,cryptoKey);
+      if(e)await encSave(`d:e:${ds}`,e,newKey);
+    }
+    await saveMeta(newKey,{meetDay});
+    setCryptoKey(newKey);setPw1('');setPw2('');setPwErr('');setShowSettings(false);
+  };
+  const doLogout=()=>{
+    setCryptoKey(null);setPhase('login');setEntries({});setEntryDates(new Set());
+    setSummary('');setModelStatus('');setView('day');
+  };
+
+  /* load entry */
+  useEffect(()=>{
+    if(phase!=='app'||!cryptoKey)return;
+    if(entries[sel]!==undefined)return;
+    (async()=>{
+      const e=await encLoad(`d:e:${sel}`,cryptoKey);
+      setEntries(p=>({...p,[sel]:e||{research:'',private:'',job:''}}));
+    })();
+  },[sel,phase,cryptoKey]);
+
+  /* update entry */
+  const updateEntry=(catId,val)=>{
+    setEntries(p=>{
+      const cur=p[sel]||{research:'',private:'',job:''};
+      const upd={...cur,[catId]:val};
+      clearTimeout(saveRef.current);
+      saveRef.current=setTimeout(async()=>{
+        await encSave(`d:e:${sel}`,upd,cryptoKey);
+        setEntryDates(s=>new Set([...s,sel]));
+        setSaved(true);setTimeout(()=>setSaved(false),2000);
+      },700);
+      return{...p,[sel]:upd};
+    });
+  };
+
+  const saveMeetDay=async(d)=>{
+    setMeetDay(d);
+    await saveMeta(cryptoKey,{meetDay:d});
+  };
+
+  /* AI summary */
+  const genSummary=async()=>{
+    if(!navigator.gpu){
+      setSummary('このブラウザはWebGPUに対応していないため、WebLLMを実行できません。ChromeやEdgeの最新版で試してください。');
+      return;
+    }
+    setSumLoading(true);setSummary('');setModelStatus('');
+    const{start,end}=getMDRange(meetDay);
+    const items=[];const cur=new Date(start);
+    while(cur<=end){
+      const ds=fmt(cur);
+      let e=entries[ds];
+      if(!e&&entryDates.has(ds)){e=await encLoad(`d:e:${ds}`,cryptoKey);}
+      if(e&&(e.research||e.private||e.job))items.push({date:ds,...e});
+      cur.setDate(cur.getDate()+1);
+    }
+    if(!items.length){setSummary('この週の記録がありません。');setSumLoading(false);return;}
+    const prompt=`以下は研究生活の日記記録です。週次ミーティングで報告するためのサマリーを作成してください。
+
+${items.map(e=>`【${e.date}】\n${e.research?`■研究: ${e.research}\n`:''}${e.private?`■プライベート: ${e.private}\n`:''}${e.job?`■就活: ${e.job}\n`:''}`).join('\n')}
+
+以下の構成で簡潔にまとめてください：
+## 今週の研究進捗
+## 課題・問題点
+## 来週の目標${items.some(x=>x.job)?'\n## 就活状況':''}`;
+    try{
+      if(!webllmEngineRef.current){
+        setModelStatus('初回のみAIモデルをダウンロードしています。少し時間がかかります。');
+        const webllm=await window.webllmReady;
+        webllmEngineRef.current=await webllm.CreateMLCEngine(
+          'Llama-3.2-1B-Instruct-q4f16_1-MLC',
+          {initProgressCallback:p=>setModelStatus(p.text||'モデルを読み込み中...')}
+        );
+      }
+      setModelStatus('サマリーを生成しています...');
+      const res=await webllmEngineRef.current.chat.completions.create({
+        messages:[
+          {role:'system',content:'あなたは研究日誌を週次ミーティング用に簡潔な日本語で整理するアシスタントです。日誌にない事実は足さないでください。'},
+          {role:'user',content:prompt}
+        ],
+        temperature:0.2,
+        max_tokens:900
+      });
+      setSummary(res.choices?.[0]?.message?.content?.trim()||'サマリーを生成できませんでした。');
+    }catch(err){
+      console.error(err);
+      webllmEngineRef.current=null;
+      const msg=String(err.message||err);
+      const hint=msg.includes('GPUBuffer')||msg.includes('mapAsync')||msg.includes('Device')
+        ? '\n\nGPUの一時エラーの可能性があります。ページを再読み込みしてもう一度試してください。続く場合はChrome/Edgeを最新版にし、ブラウザ設定からこのサイトのキャッシュ/IndexedDBを削除してから再生成してください。'
+        : '';
+      setSummary(`WebLLMの実行中にエラーが発生しました: ${msg}${hint}`);
+    }
+    setModelStatus('');setSumLoading(false);
+  };
+
+  /* Calendar */
+  const calY=calMon.getFullYear(),calM=calMon.getMonth();
+  const daysInM=new Date(calY,calM+1,0).getDate();
+  const firstD=new Date(calY,calM,1).getDay();
+  const today=todayStr();
+  const curEntry=entries[sel]||{research:'',private:'',job:''};
+  const{start:wkStart,end:wkEnd}=getMDRange(meetDay);
+  const fmtS=d=>`${d.getMonth()+1}/${d.getDate()}`;
+
+  /* ── Render ── */
+  if(phase==='loading')return(
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh'}}>
+      <i className="ti ti-loader-2 spin" style={{fontSize:28,color:'var(--text3)'}}/>
+    </div>
+  );
+
+  if(phase==='setup'||phase==='login')return(
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:'1rem'}}>
+      <div style={{width:'100%',maxWidth:380}}>
+        <div style={{textAlign:'center',marginBottom:'2rem'}}>
+          <div style={{width:56,height:56,background:'var(--surface2)',borderRadius:14,display:'inline-flex',alignItems:'center',justifyContent:'center',marginBottom:12,border:'1px solid var(--border)'}}>
+            <i className="ti ti-notebook" style={{fontSize:28,color:'var(--text2)'}}/>
+          </div>
+          <h1 style={{fontSize:20,fontWeight:500,marginBottom:6}}>研究日記</h1>
+          <p style={{color:'var(--text2)',fontSize:13}}>{phase==='setup'?'パスワードを設定して開始':'パスワードを入力してください'}</p>
+        </div>
+        <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:"var(--radius)",padding:'1.5rem',display:'flex',flexDirection:'column',gap:10}}>
+          <input type="password" placeholder="パスワード" value={pw1} onChange={e=>setPw1(e.target.value)}
+            onKeyDown={e=>e.key==='Enter'&&(phase==='setup'?document.getElementById('pc2')?.focus():doLogin())} autoFocus/>
+          {phase==='setup'&&<input id="pc2" type="password" placeholder="パスワード（確認）" value={pw2}
+            onChange={e=>setPw2(e.target.value)} onKeyDown={e=>e.key==='Enter'&&doSetup()}/>}
+          {pwErr&&<p style={{color:'var(--red)',fontSize:12}}>{pwErr}</p>}
+          <button className="primary" onClick={phase==='setup'?doSetup:doLogin} style={{justifyContent:'center',padding:'10px'}}>
+            <i className={`ti ${phase==='setup'?'ti-lock':'ti-login'}`}/>
+            {phase==='setup'?'設定して開始':'ログイン'}
+          </button>
+        </div>
+        {phase==='login'&&<p style={{textAlign:'center',marginTop:16,fontSize:12,color:'var(--text3)'}}>
+          ※ データはこのブラウザにのみ保存されています
+        </p>}
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{display:'grid',gridTemplateColumns:'210px 1fr',gridTemplateRows:'48px 1fr',minHeight:'100vh'}}>
+      {/* Header */}
+      <div style={{gridColumn:'1/-1',borderBottom:'1px solid var(--border)',background:'var(--surface)',display:'flex',alignItems:'center',padding:'0 16px',gap:10,position:'sticky',top:0,zIndex:10}}>
+        <i className="ti ti-notebook" style={{fontSize:18,color:'var(--text2)'}}/>
+        <span style={{fontWeight:500,fontSize:14}}>研究日記</span>
+        <div style={{flex:1}}/>
+        {saved&&<span style={{fontSize:12,color:'var(--green)',display:'flex',alignItems:'center',gap:4}}>
+          <i className="ti ti-check"/>保存済み</span>}
+        <button onClick={()=>{setView(v=>v==='summary'?'day':'summary');setShowSettings(false);}}
+          className={view==='summary'?'active':''}>
+          <i className="ti ti-sparkles"/>週次サマリー</button>
+        <button onClick={()=>{setShowSettings(s=>!s);setView('day');}} className={showSettings?'active':''}>
+          <i className="ti ti-settings"/></button>
+        <button onClick={doLogout}><i className="ti ti-logout"/></button>
+      </div>
+
+      {/* Sidebar */}
+      <div style={{borderRight:'1px solid var(--border)',background:'var(--surface)',padding:'14px 10px',overflowY:'auto',display:'flex',flexDirection:'column',gap:12}}>
+        {/* Mini Calendar */}
+        <div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+            <button onClick={()=>setCalMon(m=>new Date(m.getFullYear(),m.getMonth()-1,1))} style={{padding:'3px 7px'}}>
+              <i className="ti ti-chevron-left"/></button>
+            <span style={{fontSize:12,fontWeight:500,color:'var(--text2)'}}>{calY}年{calM+1}月</span>
+            <button onClick={()=>setCalMon(m=>new Date(m.getFullYear(),m.getMonth()+1,1))} style={{padding:'3px 7px'}}>
+              <i className="ti ti-chevron-right"/></button>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:1,textAlign:'center'}}>
+            {DAYS.map((d,i)=><div key={d} style={{fontSize:10,color:i===0?'var(--red)':i===6?'var(--blue)':'var(--text3)',padding:'3px 0'}}>{d}</div>)}
+            {[...Array(firstD).fill(null),...Array(daysInM).fill(0).map((_,i)=>i+1)].map((day,idx)=>{
+              if(!day)return<div key={`e${idx}`}/>;
+              const ds=`${calY}-${String(calM+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+              const isSel=ds===sel,isTod=ds===today;
+              const hasE=entryDates.has(ds);
+              const dow=(firstD+day-1)%7;
+              return(
+                <div key={day} onClick={()=>{setSel(ds);setView('day');setShowSettings(false);}}
+                  style={{fontSize:11,padding:'3px 1px',cursor:'pointer',borderRadius:5,textAlign:'center',
+                    background:isSel?'var(--blue-bg)':isTod&&!isSel?'var(--surface2)':'transparent',
+                    color:isSel?'var(--blue)':dow===0?'var(--red)':dow===6?'var(--blue)':'var(--text)',
+                    fontWeight:isTod?500:400,display:'flex',flexDirection:'column',alignItems:'center'}}>
+                  {day}
+                  {hasE&&<div style={{width:4,height:4,borderRadius:'50%',background:isSel?'var(--blue)':'var(--green)',marginTop:1}}/>}
+                </div>);
+            })}
+          </div>
+        </div>
+        <button onClick={()=>{setSel(today);setCalMon(new Date());setView('day');setShowSettings(false);}} style={{justifyContent:'center',fontSize:12}}>
+          <i className="ti ti-calendar-today"/>今日</button>
+
+        {/* Settings panel */}
+        {showSettings&&<div style={{borderTop:'1px solid var(--border)',paddingTop:12,display:'flex',flexDirection:'column',gap:12}}>
+          <p style={{fontSize:11,fontWeight:500,color:'var(--text3)',letterSpacing:'.06em'}}>設定</p>
+
+          <div>
+            <p style={{fontSize:11,color:'var(--text2)',marginBottom:6,fontWeight:500}}>ミーティング曜日</p>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2}}>
+              {DAYS.map((d,i)=><button key={d} onClick={()=>saveMeetDay(i)} style={{padding:'4px 1px',fontSize:10,justifyContent:'center',
+                background:meetDay===i?'var(--amber-bg)':'transparent',
+                color:meetDay===i?'var(--amber)':'var(--text2)',
+                border:`1px solid ${meetDay===i?'var(--amber-bd)':'var(--border)'}`}}>{d}</button>)}
+            </div>
+            <p style={{fontSize:10,color:'var(--text3)',marginTop:5}}>{DAYS[meetDay]}曜日 に設定中</p>
+          </div>
+
+          <div>
+            <p style={{fontSize:11,color:'var(--text2)',marginBottom:6,fontWeight:500}}>AIサマリー</p>
+            <p style={{fontSize:10,color:'var(--text3)',marginBottom:6,lineHeight:1.5}}>
+              WebLLMで端末内生成します。<br/>初回のみモデルをダウンロードします。
+            </p>
+          </div>
+
+          <div>
+            <p style={{fontSize:11,color:'var(--text2)',marginBottom:6,fontWeight:500}}>パスワード変更</p>
+            <input type="password" placeholder="新しいパスワード" value={pw1} onChange={e=>setPw1(e.target.value)} style={{fontSize:12,marginBottom:6}}/>
+            <input type="password" placeholder="確認" value={pw2} onChange={e=>setPw2(e.target.value)} style={{fontSize:12,marginBottom:6}}/>
+            {pwErr&&<p style={{fontSize:11,color:'var(--red)',marginBottom:4}}>{pwErr}</p>}
+            <button onClick={doChangePw} style={{fontSize:12,justifyContent:'center',width:'100%'}}>変更する</button>
+          </div>
+        </div>}
+      </div>
+
+      {/* Main */}
+      <div style={{padding:'20px 24px',overflowY:'auto',background:'var(--bg)'}}>
+        {view==='day'&&<DayView date={sel} entry={curEntry} cat={cat} setCat={setCat} onUpdate={updateEntry} today={today}/>}
+        {view==='summary'&&<SummaryView meetDay={meetDay} summary={summary} loading={sumLoading}
+          wkStart={wkStart} wkEnd={wkEnd} onGenerate={genSummary} modelStatus={modelStatus}/>}
+      </div>
+    </div>
+  );
+}
+
+
+function DayView({date,entry,cat,setCat,onUpdate,today}){
+  const d=parseD(date);
+  const isToday=date===today,isFuture=date>today;
+  return(
+    <div style={{maxWidth:700}}>
+      <div style={{display:'flex',alignItems:'baseline',flexWrap:'wrap',gap:8,marginBottom:20}}>
+        <h2 style={{fontSize:22,fontWeight:500}}>{d.getFullYear()}年{d.getMonth()+1}月{d.getDate()}日</h2>
+        <span style={{color:'var(--text2)',fontSize:14}}>（{DAYS[d.getDay()]}曜日）</span>
+        {isToday&&<span className="badge badge-green">今日</span>}
+        {isFuture&&<span className="badge" style={{background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)'}}>未来の日付</span>}
+      </div>
+      <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',marginBottom:16}}>
+        {CATS.map(c=>{
+          const isA=cat===c.id,hasC=entry[c.id];
+          return(
+            <button key={c.id} onClick={()=>setCat(c.id)} style={{
+              padding:'8px 16px',background:'transparent',border:'none',borderBottom:`2px solid ${isA?c.accent:'transparent'}`,
+              borderRadius:0,color:isA?c.accent:'var(--text2)',fontWeight:isA?500:400,fontSize:13,marginBottom:-1,gap:6}}>
+              <i className={`ti ${c.icon}`} style={{fontSize:15}}/>
+              {c.label}
+              {hasC&&<div style={{width:5,height:5,borderRadius:'50%',background:c.dotColor}}/>}
+            </button>);
+        })}
+      </div>
+      {CATS.map(c=>(
+        <div key={c.id} style={{display:cat===c.id?'block':'none'}}>
+          <textarea value={entry[c.id]||''} onChange={e=>onUpdate(c.id,e.target.value)}
+            disabled={isFuture}
+            placeholder={isFuture?'未来の日付には記録できません':`${c.label}の内容を記録...`}
+            style={{minHeight:320,background:'var(--surface)',borderColor:'var(--border2)'}}/>
+          <p style={{marginTop:8,fontSize:12,color:'var(--text3)'}}>自動保存されます</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SummaryView({meetDay,summary,loading,wkStart,wkEnd,onGenerate,modelStatus}){
+  const fmtS=d=>`${d.getMonth()+1}月${d.getDate()}日`;
+  return(
+    <div style={{maxWidth:700}}>
+      <div style={{display:'flex',alignItems:'center',flexWrap:'wrap',gap:10,marginBottom:6}}>
+        <h2 style={{fontSize:20,fontWeight:500}}>週次サマリー</h2>
+        <span style={{fontSize:13,color:'var(--text2)',background:'var(--surface2)',padding:'3px 10px',borderRadius:20,border:'1px solid var(--border)'}}>
+          {fmtS(wkStart)} 〜 {fmtS(wkEnd)}
+        </span>
+      </div>
+      <p style={{fontSize:13,color:'var(--text2)',marginBottom:18}}>
+        ミーティング曜日: {['日','月','火','水','木','金','土'][meetDay]}曜日
+      </p>
+      <div style={{background:'var(--blue-bg)',border:'1px solid var(--blue-bd)',borderRadius:'var(--radius)',padding:'10px 14px',marginBottom:16,fontSize:13,color:'var(--blue)'}}>
+        <i className="ti ti-device-desktop" style={{marginRight:6,verticalAlign:'-2px'}}/>
+        WebLLMを使って、このブラウザ内でサマリーを生成します。APIキーは不要です。
+      </div>
+      <button onClick={onGenerate} disabled={loading} style={{padding:'10px 18px',marginBottom:20,opacity:loading?0.7:1}}>
+        <i className={`ti ${loading?'ti-loader-2 spin':'ti-sparkles'}`}/>
+        {loading?'AIが生成中...':'AIでサマリーを生成'}
+      </button>
+      {modelStatus&&<p style={{fontSize:12,color:'var(--text2)',marginBottom:14}}>{modelStatus}</p>}
+      {summary?(
+        <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:20}}>
+          <ul style={{listStyle:'none',padding:0}}>{renderMD(summary)}</ul>
+        </div>
+      ):!loading&&(
+        <div style={{textAlign:'center',padding:'50px 0',color:'var(--text3)'}}>
+          <i className="ti ti-file-description" style={{fontSize:36,display:'block',marginBottom:10}}/>
+          <p style={{fontSize:14}}>ボタンを押すと、この週の日記をもとに<br/>ミーティング用の進捗報告を作成します</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
